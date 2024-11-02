@@ -1,8 +1,8 @@
 === Robokassa payment gateway for Woocommerce ===
 Tags: robokassa payment gateway, robokassa, robokassa woocommerce, ecommerce, payment gateway, woo-commerce, woocommerce ===
 Requires at least: 5.7
-Tested up to: 6.6.1
-Stable tag: 1.6.2
+Tested up to: 6.6.2
+Stable tag: 1.6.3
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -76,13 +76,16 @@ https://www.robokassa.ru/ru/Support/SendMsg.aspx
 
 == Changelog ==
 
-= 1.6.2 =
+= 1.6.3 =
+* Добавлена поддержка для Checkout Blocks on Woocommerce.
+* Исправлены незначительные ошибки
 
-Исправлены незначительные ошибки
-Добавлено логирование в /data/
-Добавлена интеграция с Мой Склад
-Функция попозиционной маркировки перенесена в ЛЛК Робокассы
-Добавлен новый способ оплаты в кредит и рассрочку
+= 1.6.2 =
+* Исправлены незначительные ошибки
+* Добавлено логирование в /data/
+* Добавлена интеграция с Мой Склад
+* Функция попозиционной маркировки перенесена в ЛЛК Робокассы
+* Добавлен новый способ оплаты в кредит и рассрочку
 
 = 1.6.1 =
 * Исправлены незначительные ошибки
