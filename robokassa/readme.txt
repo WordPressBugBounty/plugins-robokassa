@@ -76,6 +76,9 @@ https://www.robokassa.ru/ru/Support/SendMsg.aspx
 
 == Changelog ==
 
+= 1.6.4 =
+* Исправлены незначительные ошибки
+
 = 1.6.3 =
 * Добавлена поддержка для Checkout Blocks on Woocommerce.
 * Исправлены незначительные ошибки
