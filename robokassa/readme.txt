@@ -115,6 +115,8 @@ License URI: https://www.gnu.org/licenses/gpl-2.0.html
 2. `/assets/images/screenshot-2.png`
 
 == Changelog ==
+= 1.7.3 =
+* Добавлена поддержка мониторинга состояния плагина
 
 = 1.7.2 =
 * Добавлен выбор "Признак предмета расчёта" для доставки
