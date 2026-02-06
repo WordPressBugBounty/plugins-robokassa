@@ -5,7 +5,7 @@
  * Plugin URI: /wp-admin/admin.php?page=main_settings_rb.php
  * Author: Robokassa
  * Author URI: https://robokassa.com
- * Version: 1.7.3
+ * Version: 1.8.4
  */
 
 require_once('payment-widget.php');
@@ -15,29 +15,10 @@ use Robokassa\Payment\RoboDataBase;
 use Robokassa\Payment\RobokassaPayAPI;
 use Robokassa\Payment\RobokassaSms;
 use Robokassa\Payment\Util;
+use Robokassa\Payment\AgentManager;
+use Robokassa\Payment\TaxManager;
 use Automattic\WooCommerce\Utilities\OrderUtil;
 use Automattic\WooCommerce\Blocks\Payments\PaymentMethodRegistry;
-
-add_action('wp_enqueue_scripts', function () {
-	wp_enqueue_style(
-		'robokassa_payment_admin_style_menu',
-		plugin_dir_url(__FILE__) . 'assets/css/menu.css'
-	);
-
-	wp_enqueue_style(
-		'robokassa_payment_admin_style_main',
-		plugin_dir_url(__FILE__) . 'assets/css/main.css'
-	);
-
-	wp_enqueue_style(
-		'robokassa_payment_podeli',
-		plugin_dir_url(__FILE__) . 'assets/css/payment_styles.css'
-	);
-	wp_enqueue_script(
-		'robokassa_payment_admin_config',
-		plugin_dir_url(__FILE__) . 'assets/js/payment_widget.js'
-	);
-});
 
 define('ROBOKASSA_PAYMENT_DEBUG_STATUS', false);
 
@@ -51,45 +32,142 @@ spl_autoload_register(
 );
 
 add_action('woocommerce_cart_calculate_fees', 'robokassa_chosen_payment_method');
+add_action('wp_enqueue_scripts', 'robokassa_enqueue_frontend_assets');
 
-function robokassa_chosen_payment_method(WC_Cart $cart)
-{
-
-	if (
-		(double)get_option('robokassa_patyment_markup') > 0
-		&& in_array(
-			WC()->session->get('chosen_payment_method'),
-			array_map(
-				function ($class) {
-					$method = new $class;
-					return $method->id;
-				},
-				robokassa_payment_add_WC_WP_robokassa_class()
+if (!function_exists('robokassa_chosen_payment_method')) {
+	/**
+	 * Добавляет наценку для выбранных методов Robokassa.
+	 *
+	 * @param WC_Cart $cart
+	 * @return void
+	 */
+	function robokassa_chosen_payment_method(WC_Cart $cart)
+	{
+		if (
+			(double)get_option('robokassa_patyment_markup') > 0
+			&& in_array(
+				WC()->session->get('chosen_payment_method'),
+				array_map(
+					function ($class) {
+						$method = new $class;
+						return $method->id;
+					},
+					robokassa_payment_add_WC_WP_robokassa_class()
+				)
 			)
-		)
-	) {
-
-		$cart->add_fee(
-			'Наценка',
-			$cart->get_cart_contents_total() / 100 * (double)get_option('robokassa_patyment_markup'),
-			false
-		);
+		) {
+			$cart->add_fee(
+				'Наценка',
+				$cart->get_cart_contents_total() / 100 * (double)get_option('robokassa_patyment_markup'),
+				false
+			);
+		}
 	}
 }
 
 add_action('woocommerce_review_order_before_payment', 'refresh_payment_methods');
+add_action('woocommerce_product_options_general_product_data', 'robokassa_payment_render_product_tax_field');
+add_action('woocommerce_product_options_general_product_data', 'robokassa_payment_render_product_agent_fields');
+add_action('woocommerce_admin_process_product_object', 'robokassa_payment_save_product_tax_field');
+add_action('woocommerce_admin_process_product_object', 'robokassa_payment_save_product_agent_fields');
 function refresh_payment_methods()
 {
 	// jQuery code
 	?>
-    <script type="text/javascript">
-        (function ($) {
-            $('form.checkout').on('change', 'input[name^="payment_method"]', function () {
-                $('body').trigger('update_checkout');
-            });
-        })(jQuery);
-    </script>
+	<script type="text/javascript">
+		(function ($) {
+			$('form.checkout').on('change', 'input[name^="payment_method"]', function () {
+				$('body').trigger('update_checkout');
+			});
+		})(jQuery);
+	</script>
 	<?php
+}
+
+function robokassa_enqueue_frontend_assets()
+{
+	if (!function_exists('is_checkout') || !is_checkout()) {
+		return;
+	}
+	$stylePath = plugin_dir_path(__FILE__) . 'assets/css/robokassa-redirect.css';
+	$scriptPath = plugin_dir_path(__FILE__) . 'assets/js/robokassa-redirect.js';
+	if (file_exists($stylePath)) {
+		wp_enqueue_style(
+			'robokassa-redirect',
+			plugins_url('assets/css/robokassa-redirect.css', __FILE__),
+			array(),
+			filemtime($stylePath)
+		);
+	}
+	if (!file_exists($scriptPath)) {
+		return;
+	}
+	wp_enqueue_script(
+		'robokassa-redirect',
+		plugins_url('assets/js/robokassa-redirect.js', __FILE__),
+		array(),
+		filemtime($scriptPath),
+		true
+	);
+	$config = robokassa_prepare_redirect_config();
+	if ($config !== null) {
+		wp_localize_script('robokassa-redirect', 'robokassaRedirectConfig', $config);
+	}
+}
+
+/**
+ * Готовит конфигурацию для проверки статуса заказа при iframe-оплате.
+ *
+ * @return array|null
+ */
+function robokassa_prepare_redirect_config()
+{
+	if (get_option('robokassa_iframe') != 1 || !function_exists('is_checkout_pay_page') || !is_checkout_pay_page()) {
+		return null;
+	}
+	$order_id = absint(get_query_var('order-pay'));
+	$order_key = isset($_GET['key']) ? sanitize_text_field(wp_unslash($_GET['key'])) : '';
+	if ($order_id <= 0 || $order_key === '') {
+		return null;
+	}
+	$order = wc_get_order($order_id);
+	if (!$order instanceof \WC_Order || $order->get_order_key() !== $order_key) {
+		return null;
+	}
+	return array(
+		'ajaxUrl' => admin_url('admin-ajax.php'),
+		'orderId' => $order_id,
+		'orderKey' => $order_key,
+		'successUrl' => $order->get_checkout_order_received_url(),
+		'checkInterval' => 5000,
+		'maxAttempts' => 120,
+	);
+}
+
+/**
+ * Возвращает статус заказа для перенаправления после iframe-оплаты.
+ *
+ * @return void
+ */
+function robokassa_check_order_status()
+{
+	$order_id = isset($_POST['orderId']) ? absint($_POST['orderId']) : 0;
+	$order_key = isset($_POST['orderKey']) ? sanitize_text_field(wp_unslash($_POST['orderKey'])) : '';
+
+	if ($order_id <= 0 || $order_key === '') {
+		wp_send_json_error(array('message' => 'invalid_request'));
+	}
+
+	$order = wc_get_order($order_id);
+
+	if (!$order instanceof \WC_Order || $order->get_order_key() !== $order_key) {
+		wp_send_json_error(array('message' => 'invalid_order'));
+	}
+
+	wp_send_json_success(array(
+		'paid' => $order->is_paid(),
+		'status' => $order->get_status(),
+	));
 }
 
 add_action('admin_menu', 'robokassa_payment_initMenu'); // Хук для добавления страниц плагина в админку
@@ -101,6 +179,8 @@ add_action('woocommerce_order_status_changed', 'robokassa_2check_send', 10, 3);
 add_action('woocommerce_order_status_changed', 'robokassa_hold_confirm', 10, 4);
 add_action('woocommerce_order_status_changed', 'robokassa_hold_cancel', 10, 4);
 add_action('robokassa_cancel_payment_event', 'robokassa_hold_cancel_after5', 10, 1);
+add_action('wp_ajax_robokassa_check_order_status', 'robokassa_check_order_status');
+add_action('wp_ajax_nopriv_robokassa_check_order_status', 'robokassa_check_order_status');
 
 register_activation_hook(__FILE__, 'robokassa_payment_wp_robokassa_activate'); //Хук при активации плагина. Дефолтовые настройки и таблица в БД для СМС.
 
@@ -136,22 +216,115 @@ function robokassa_payment_DEBUG($str)
 	fclose($DEBUGFile);
 }
 
-function calculate_tax_sum($tax, $shipping_total) {
-	$taxRates = [
-		"vat0" => 0,
-		"none" => 0,
-		"vat10" => 10,
-		"vat20" => 20,
-		"vat110" => 10 / 110,
-		"vat120" => 20 / 120,
-		"vat5" => 5,
-		"vat7" => 7,
-		"vat105" => 5 / 105,
-		"vat107" => 7 / 107,
-	];
+/**
+ * Возвращает сервис управления налоговыми ставками.
+ *
+ * @return TaxManager
+ */
+function robokassa_payment_get_tax_manager()
+{
+	global $robokassa_payment_tax_manager;
 
-	$rate = $taxRates[$tax] ?? 0;
-	return (wc_format_decimal($shipping_total, get_option('woocommerce_price_num_decimals')) / 100) * $rate;
+	if (!$robokassa_payment_tax_manager instanceof TaxManager) {
+		$robokassa_payment_tax_manager = new TaxManager();
+	}
+
+	return $robokassa_payment_tax_manager;
+}
+
+/**
+ * Возвращает сервис управления агенскими полями товаров.
+ *
+ * @return AgentManager
+ */
+function robokassa_payment_get_agent_manager()
+{
+	global $robokassa_payment_agent_manager;
+
+	if (!$robokassa_payment_agent_manager instanceof AgentManager) {
+		$robokassa_payment_agent_manager = new AgentManager();
+	}
+
+	return $robokassa_payment_agent_manager;
+}
+
+/**
+ * Вычисляет сумму налога для передачи в Робокассу.
+ *
+ * @param string    $tax
+ * @param float|int $amount
+ *
+ * @return float
+ */
+function calculate_tax_sum($tax, $amount)
+{
+	return robokassa_payment_get_tax_manager()->calculateTaxSum($tax, $amount);
+}
+
+/**
+ * Возвращает налоговую ставку по умолчанию.
+ *
+ * @return string
+ */
+function robokassa_payment_get_default_tax()
+{
+	return robokassa_payment_get_tax_manager()->getDefaultTax();
+}
+
+/**
+ * Определяет налоговую ставку для позиции заказа.
+ *
+ * @param \WC_Order_Item $item
+ *
+ * @return string
+ */
+function robokassa_payment_get_item_tax($item)
+{
+	return robokassa_payment_get_tax_manager()->getItemTax($item);
+}
+
+/**
+ * Отрисовывает поле выбора налоговой ставки в карточке товара.
+ *
+ * @return void
+ */
+function robokassa_payment_render_product_tax_field()
+{
+	robokassa_payment_get_tax_manager()->renderProductTaxField();
+}
+
+/**
+ * Отрисовывает поля агента в карточке товара.
+ *
+ * @return void
+ */
+function robokassa_payment_render_product_agent_fields()
+{
+	robokassa_payment_get_agent_manager()->renderProductAgentFields();
+}
+
+/**
+ * Сохраняет выбранную налоговую ставку товара.
+ *
+ * @param \WC_Product $product
+ *
+ * @return void
+ */
+function robokassa_payment_save_product_tax_field($product)
+{
+	robokassa_payment_get_tax_manager()->saveProductTaxField($product);
+}
+
+/**
+ * Сохраняет поля агента в карточке товара.
+ *
+ * @param \WC_Product $product
+ *
+ * @return void
+ */
+function robokassa_payment_save_product_agent_fields($product)
+{
+	robokassa_payment_get_agent_manager()->saveProductAgentFields($product);
 }
 
 /**
@@ -191,7 +364,8 @@ function robokassa_payment_smsWhenCompleted($order_id, $debug = '')
 		$debug .= "translit = $translit \r\n";
 		$debug .= "order_id = $order_id \r\n";
 
-		$roboDataBase = new RoboDataBase(mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME));
+		global $wpdb;
+		$roboDataBase = new RoboDataBase($wpdb);
 		$robokassa = new RobokassaPayAPI($mrhLogin, get_option('robokassa_payment_shoppass1'), get_option('robokassa_payment_shoppass2'));
 
 		$sms = new RobokassaSms($roboDataBase, $robokassa, $phone, $message, $translit, $order_id, 2);
@@ -210,6 +384,7 @@ function robokassa_payment_wp_robokassa_activate($debug)
 	add_option('robokassa_payment_test_onoff', 'false');
 	add_option('robokassa_payment_type_commission', 'true');
 	add_option('robokassa_payment_tax', 'none');
+	add_option('robokassa_payment_tax_source', 'global');
 	add_option('robokassa_payment_sno', 'fckoff');
 	add_option('robokassa_payment_who_commission', 'shop');
 	add_option('robokassa_payment_paytype', 'false');
@@ -227,7 +402,7 @@ function robokassa_payment_initMenu()
 	add_submenu_page('main_settings_rb.php', 'Настройки СМС', 'Настройки СМС', 'edit_pages', 'robokassa_payment_sms_rb', 'robokassa_payment_sms_settings');
 	add_submenu_page('main_settings_rb.php', 'Генерировать YML', 'Генерировать YML', 'edit_pages', 'robokassa_payment_YMLGenerator', 'robokassa_payment_yml_generator');
 	add_submenu_page('main_settings_rb.php', 'Регистрация', 'Регистрация', 'edit_pages', 'robokassa_payment_registration', 'robokassa_payment_reg');
-	add_submenu_page('main_settings_rb.php', 'Оплата по частям', 'Оплата по частям', 'edit_pages', 'robokassa_payment_credit', 'robokassa_payment_credit');
+	add_submenu_page('main_settings_rb.php', 'Виджет и бейдж Robokassa', 'Виджет и бейдж Robokassa', 'edit_pages', 'robokassa_payment_credit', 'robokassa_payment_credit');
 }
 
 /**
@@ -264,6 +439,9 @@ function robokassa_payment_wp_robokassa_checkPayment()
 		$returner = '';
 
 		$order_status = get_option('robokassa_payment_order_status_after_payment');
+		if (empty($order_status)) {
+			$order_status = 'wc-processing';
+		}
 
 		if ($_REQUEST['robokassa'] === 'result') {
 
@@ -293,11 +471,7 @@ function robokassa_payment_wp_robokassa_checkPayment()
 
 				$order = new WC_Order($_REQUEST['InvId']);
 				$order->add_order_note('Заказ успешно оплачен!');
-				if (!empty($order_status)) {
-					$order->update_status(str_replace('wc-', '', $order_status));
-				} else {
-					$order->payment_complete();
-				}
+				$order->update_status(str_replace('wc-', '', $order_status));
 
 				global $woocommerce;
 				$woocommerce->cart->empty_cart();
@@ -317,9 +491,10 @@ function robokassa_payment_wp_robokassa_checkPayment()
 				if (get_option('robokassa_payment_sms1_enabled') == 'on') {
 
 					try {
+						global $wpdb;
 
 						(new RobokassaSms(
-							(new RoboDataBase(mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME))),
+							(new RoboDataBase($wpdb)),
 							(new RobokassaPayAPI(
 								get_option('robokassa_payment_MerchantLogin'),
 								get_option('robokassa_payment_shoppass1'),
@@ -447,11 +622,8 @@ function createRobokassaReceipt($order_id)
 	$order = new WC_Order($order_id);
 
 	$sno = get_option('robokassa_payment_sno');
-
-	$tax = get_option('robokassa_payment_tax');
-	if ($tax == "vat118") $tax = "vat120";
-
-	$cart = $woocommerce->cart->get_cart();
+	$default_tax = robokassa_payment_get_default_tax();
+	$country = get_option('robokassa_country_code');
 
 	$receipt = array(
 		'sno' => $sno,
@@ -463,67 +635,81 @@ function createRobokassaReceipt($order_id)
 	/**
 	 * @var \WC_Order_Item_Product $item
 	 */
-	foreach ($order->get_items() as $item)
-	{
-
+	foreach ($order->get_items() as $item) {
 		$product = $item->get_product();
 
-		$current = [];
+		$current = array();
 		$current['name'] = $product->get_title();
 		$current['quantity'] = $item->get_quantity();
 		$current['sum'] = wc_format_decimal($item->get_total(), get_option('woocommerce_price_num_decimals'));
 		$current['cost'] = wc_format_decimal($item->get_total(), get_option('woocommerce_price_num_decimals')) / $item->get_quantity();
 
 		$total_receipt += $current['sum'];
+		$item_tax = robokassa_payment_get_item_tax($item);
 
-		if (get_option('robokassa_country_code') == 'RU') {
+		if ($country == 'RU') {
 			$current['payment_object'] = get_option('robokassa_payment_paymentObject');
 			$current['payment_method'] = get_option('robokassa_payment_paymentMethod');
 		}
 
-		if ((isset($receipt['sno']) && $receipt['sno'] == 'osn') || get_option('robokassa_country_code') == 'RU') {
-			$current['tax'] = $tax;
+		if (($sno == 'osn') || $country == 'RU') {
+			$current['tax'] = $item_tax;
 		} else {
 			$current['tax'] = 'none';
+		}
+
+		$agentData = robokassa_payment_get_agent_manager()->getItemAgentData($item);
+
+		if (!empty($agentData)) {
+			if (isset($agentData['agent_info'])) {
+				$current['agent_info'] = $agentData['agent_info'];
+			}
+
+			if (isset($agentData['supplier_info'])) {
+				$current['supplier_info'] = $agentData['supplier_info'];
+			}
 		}
 
 		$receipt['items'][] = $current;
 	}
 
-
-	foreach($order->get_items('fee') as $feeItem)
-	{
-		$additional_item_name = $feeItem->get_name();
-		$additional_item_total = (float) $feeItem->get_total();
+	foreach ($order->get_items('fee') as $fee_item) {
+		$additional_item_name = $fee_item->get_name();
+		$additional_item_total = (float)$fee_item->get_total();
 
 		$additional_item_data = array(
 			'name' => $additional_item_name,
-			'quantity' => $feeItem->get_quantity(),
+			'quantity' => $fee_item->get_quantity(),
 			'sum' => wc_format_decimal($additional_item_total, get_option('woocommerce_price_num_decimals')),
-			'cost' => wc_format_decimal($additional_item_total, get_option('woocommerce_price_num_decimals')) / $feeItem->get_quantity(),
+			'cost' => wc_format_decimal($additional_item_total, get_option('woocommerce_price_num_decimals')) / $fee_item->get_quantity(),
 			'payment_object' => get_option('robokassa_payment_paymentObject'),
 			'payment_method' => get_option('robokassa_payment_paymentMethod'),
-			'tax' => get_option('robokassa_payment_tax'),
 		);
+
+		if (($sno == 'osn') || $country == 'RU') {
+			$additional_item_data['tax'] = $default_tax;
+		} else {
+			$additional_item_data['tax'] = 'none';
+		}
 
 		$receipt['items'][] = $additional_item_data;
 		$total_receipt += $additional_item_total;
 	}
 
 	if ((double)$order->get_shipping_total() > 0) {
-
+		$current = array();
 		$current['name'] = 'Доставка';
 		$current['quantity'] = 1;
-		$current['cost'] = (double)sprintf("%01.2f", $order->get_shipping_total());
-		$current['sum'] = (double)sprintf("%01.2f", $order->get_shipping_total());
+		$current['cost'] = (double)sprintf('%01.2f', $order->get_shipping_total());
+		$current['sum'] = (double)sprintf('%01.2f', $order->get_shipping_total());
 
-		if (get_option('robokassa_country_code') == 'RU') {
+		if ($country == 'RU') {
 			$current['payment_object'] = get_option('robokassa_payment_paymentObject_shipping') ?: get_option('robokassa_payment_paymentObject');
 			$current['payment_method'] = get_option('robokassa_payment_paymentMethod');
 		}
 
-		if ((isset($receipt['sno']) && ($receipt['sno'] == 'osn')) || (get_option('robokassa_country_code') != 'KZ')) {
-			$current['tax'] = $tax;
+		if (($sno == 'osn') || ($country != 'KZ')) {
+			$current['tax'] = $default_tax;
 		} else {
 			$current['tax'] = 'none';
 		}
@@ -587,14 +773,25 @@ function processRobokassaPayment($order_id, $label)
 
 function robokassa_payment_createFormWC($order_id, $label)
 {
+	static $rendered = array();
+
+	if ($order_id instanceof \WC_Order) {
+		$order_key = (string) $order_id->get_id();
+	} else {
+		$order_key = (string) $order_id;
+	}
+
+	$unique_key = $label . '|' . $order_key;
+
+	if (isset($rendered[$unique_key])) {
+		return;
+	}
+
+	$rendered[$unique_key] = true;
+
 	processRobokassaPayment($order_id, $label);
 }
 
-/**
- * Начало оформления заказа
- *
- * @return void
- */
 function robokassa_payment_initWC()
 {
 	if (!defined('ABSPATH')) {
@@ -645,6 +842,11 @@ function robokassa_payment_reg()
  */
 function robokassa_payment_credit()
 {
+	if (get_option('robokassa_country_code', 'RU') === 'KZ') {
+		wp_safe_redirect(admin_url('admin.php?page=robokassa_payment_main_rb'));
+		exit;
+	}
+
 	$_GET['li'] = 'credit';
 	include 'menu_rb.php';
 	include 'main_settings_credit.php';
@@ -713,8 +915,14 @@ function robokassa_2check_send($order_id, $old_status, $new_status)
 
 	$payment_method = get_option('robokassa_payment_paymentMethod');
 	$sno = get_option('robokassa_payment_sno');
-	$tax = get_option('robokassa_payment_tax');
+	$default_tax = robokassa_payment_get_default_tax();
+	$country = get_option('robokassa_country_code');
+	$payment_object = get_option('robokassa_payment_paymentObject');
+	$second_check_payment_object = get_option('robokassa_payment_second_check_paymentObject');
 
+	if (empty($second_check_payment_object)) {
+		$second_check_payment_object = $payment_object;
+	}
 
 	if ($payment_method == 'advance' || $payment_method == 'full_prepayment' || $payment_method == 'prepayment') {
 		if ($sno == 'fckoff') {
@@ -759,23 +967,26 @@ function robokassa_2check_send($order_id, $old_status, $new_status)
 			'vats' => []
 		];
 
-		$items = $order->get_items();
 		$shipping_total = $order->get_shipping_total();
 
 		if ($shipping_total > 0) {
+			$shipping_tax = ((isset($fields['sno']) && $fields['sno'] == 'osn') || ($country != 'KZ')) ? $default_tax : 'none';
+
 			$products_items = [
 				'name' => 'Доставка',
 				'quantity' => 1,
 				'sum' => wc_format_decimal($shipping_total, get_option('woocommerce_price_num_decimals')),
 				'cost' => wc_format_decimal($shipping_total, get_option('woocommerce_price_num_decimals')),
-				'tax' => $tax,
+				'tax' => $shipping_tax,
 				'payment_method' => 'full_payment',
-				'payment_object' => get_option('robokassa_payment_paymentObject_shipping') ?: get_option('robokassa_payment_paymentObject'),
+				'payment_object' => get_option('robokassa_payment_paymentObject_shipping') ?: $payment_object,
 			];
 
 			$fields['items'][] = $products_items;
 
-			$fields['vats'][] = ['type' => $tax, 'sum' => calculate_tax_sum($tax, $shipping_total)];
+			if ($shipping_tax !== 'none') {
+				$fields['vats'][] = ['type' => $shipping_tax, 'sum' => calculate_tax_sum($shipping_tax, $shipping_total)];
+			}
 		}
 
 		if (is_plugin_active('woocommerce-checkout-add-ons/woocommerce-checkout-add-ons.php')) {
@@ -785,62 +996,78 @@ function robokassa_2check_send($order_id, $old_status, $new_status)
 				$additional_item_name = $additional_item->get_name();
 				$additional_item_total = floatval($additional_item->get_total());
 
+				$additional_tax = ((isset($fields['sno']) && $fields['sno'] == 'osn') || $country == 'RU') ? $default_tax : 'none';
+
 				$products_items = array(
 					'name' => $additional_item_name,
 					'quantity' => $additional_item->get_quantity(),
 					'sum' => wc_format_decimal($additional_item_total, get_option('woocommerce_price_num_decimals')),
 					'cost' => wc_format_decimal($additional_item_total, get_option('woocommerce_price_num_decimals')) / $additional_item->get_quantity(),
-					'payment_object' => get_option('robokassa_payment_paymentObject'),
+					'payment_object' => $second_check_payment_object,
 					'payment_method' => 'full_payment',
-					'tax' => $tax,
+					'tax' => $additional_tax,
 				);
 
 				$fields['items'][] = $products_items;
 
-				$fields['vats'][] = ['type' => $tax, 'sum' => calculate_tax_sum($tax, $shipping_total)];
+				if ($additional_tax !== 'none') {
+					$fields['vats'][] = ['type' => $additional_tax, 'sum' => calculate_tax_sum($additional_tax, $additional_item_total)];
+				}
 			}
 		}
 
-		foreach ($items as $item) {
+		foreach ($order->get_items() as $item) {
+			$item_total = (float)$item->get_total();
+			$item_tax_code = robokassa_payment_get_item_tax($item);
+			$item_tax_to_send = ((isset($fields['sno']) && $fields['sno'] == 'osn') || $country == 'RU') ? $item_tax_code : 'none';
+
 			$products_items = [
-				'name' => $item['name'],
-				'quantity' => $item['quantity'],
-				'sum' => wc_format_decimal($item['line_total'], get_option('woocommerce_price_num_decimals')),
-				'tax' => $tax,
+				'name' => $item->get_name(),
+				'quantity' => $item->get_quantity(),
+				'sum' => wc_format_decimal($item_total, get_option('woocommerce_price_num_decimals')),
+				'tax' => $item_tax_to_send,
 				'payment_method' => 'full_payment',
-				'payment_object' => get_option('robokassa_payment_paymentObject'),
+				'payment_object' => $second_check_payment_object,
 			];
 
-			$product = wc_get_product($item['product_id']);
-			$sku = $product->get_sku();
+			$product = $item->get_product();
 
-			if (!empty($sku)) {
-				$products_items['nomenclature_code'] = mb_convert_encoding($sku, 'UTF-8');
+			if ($product instanceof WC_Product) {
+				$sku = $product->get_sku();
+
+				if (!empty($sku)) {
+					$products_items['nomenclature_code'] = mb_convert_encoding($sku, 'UTF-8');
+				}
 			}
 
 			$fields['items'][] = $products_items;
 
-			$fields['vats'][] = ['type' => $tax, 'sum' => calculate_tax_sum($tax, $shipping_total)];
+			if ($item_tax_to_send !== 'none') {
+				$fields['vats'][] = ['type' => $item_tax_to_send, 'sum' => calculate_tax_sum($item_tax_to_send, $item_total)];
+			}
 		}
 
-		foreach($order->get_items('fee') as $feeItem)
-		{
-			$additional_item_name = $feeItem->get_name();
-			$additional_item_total = (float) $feeItem->get_total();
+		foreach ($order->get_items('fee') as $fee_item) {
+			$fee_total = (float)$fee_item->get_total();
+			$fee_tax = ((isset($fields['sno']) && $fields['sno'] == 'osn') || $country == 'RU') ? $default_tax : 'none';
 
 			$products_items = [
-				'name' => $additional_item_name,
-				'quantity' => $feeItem->get_quantity(),
-				'sum' => wc_format_decimal($additional_item_total, get_option('woocommerce_price_num_decimals')),
-				'tax' => $tax,
+				'name' => $fee_item->get_name(),
+				'quantity' => $fee_item->get_quantity(),
+				'sum' => wc_format_decimal($fee_total, get_option('woocommerce_price_num_decimals')),
+				'tax' => $fee_tax,
 				'payment_method' => 'full_payment',
-				'payment_object' => get_option('robokassa_payment_paymentObject'),
+				'payment_object' => $second_check_payment_object,
 			];
 
 			$fields['items'][] = $products_items;
 
-			$fields['vats'][] = ['type' => $tax, 'sum' => calculate_tax_sum($tax, $shipping_total)];
+			if ($fee_tax !== 'none') {
+				$fields['vats'][] = ['type' => $fee_tax, 'sum' => calculate_tax_sum($fee_tax, $fee_total)];
+			}
 		}
+
+		robokassa_payment_DEBUG("Robokassa: Second check data for order_id: $order_id -> " . print_r($fields, true));
 
 		/** @var string $startupHash */
 		$startupHash = formatSignFinish(
@@ -871,7 +1098,6 @@ function robokassa_2check_send($order_id, $old_status, $new_status)
 			)
 		);
 
-
 		$curl = curl_init('https://ws.roboxchange.com/RoboFiscal/Receipt/Attach');
 		curl_setopt($curl, CURLOPT_CUSTOMREQUEST, "POST");
 		curl_setopt($curl, CURLOPT_POSTFIELDS, $startupHash . '.' . $sign);
@@ -898,32 +1124,35 @@ function robokassa_2check_send($order_id, $old_status, $new_status)
 function robokassa_hold_confirm($order_id, $old_status, $new_status, $order) {
 	$option_value = get_option('robokassa_payment_hold_onoff');
 	if (($option_value == 1)
-		&& $old_status === 'on-hold' && $new_status === 'processing') {
+			&& $old_status === 'on-hold' && $new_status === 'processing') {
 		$order = wc_get_order($order_id);
 		$shipping_total = $order->get_shipping_total();
 
 		$receipt_items = array();
-		$tax = get_option('robokassa_payment_tax');
+		$default_tax = robokassa_payment_get_default_tax();
+		$country = get_option('robokassa_country_code');
+		$sno = get_option('robokassa_payment_sno');
 		$total_receipt = 0;
 
 		foreach ($order->get_items() as $item) {
 			$product = $item->get_product();
 
-			$current = [];
-			$current['name'] = $product->get_title();
+			$current = array();
+			$current['name'] = $product instanceof WC_Product ? $product->get_title() : $item->get_name();
 			$current['quantity'] = $item->get_quantity();
 			$current['sum'] = wc_format_decimal($item->get_total(), get_option('woocommerce_price_num_decimals'));
 			$current['cost'] = wc_format_decimal($item->get_total(), get_option('woocommerce_price_num_decimals')) / $item->get_quantity();
 
 			$total_receipt += $current['sum'];
 
-			if (get_option('robokassa_country_code') == 'RU') {
+			if ($country == 'RU') {
 				$current['payment_object'] = get_option('robokassa_payment_paymentObject');
 				$current['payment_method'] = get_option('robokassa_payment_paymentMethod');
 			}
 
-			if ((isset($receipt['sno']) && $receipt['sno'] == 'osn') || get_option('robokassa_country_code') == 'RU') {
-				$current['tax'] = $tax;
+			$item_tax = robokassa_payment_get_item_tax($item);
+			if (($sno == 'osn') || $country == 'RU') {
+				$current['tax'] = $item_tax;
 			} else {
 				$current['tax'] = 'none';
 			}
@@ -931,34 +1160,46 @@ function robokassa_hold_confirm($order_id, $old_status, $new_status, $order) {
 			$receipt_items[] = $current;
 		}
 
-		foreach ($order->get_items('fee') as $feeItem) {
-			$additional_item_name = $feeItem->get_name();
-			$additional_item_total = (float) $feeItem->get_total();
+		foreach ($order->get_items('fee') as $fee_item) {
+			$additional_item_name = $fee_item->get_name();
+			$additional_item_total = (float)$fee_item->get_total();
 
 			$additional_item_data = array(
 				'name' => $additional_item_name,
-				'quantity' => $feeItem->get_quantity(),
+				'quantity' => $fee_item->get_quantity(),
 				'cost' => wc_format_decimal($additional_item_total, get_option('woocommerce_price_num_decimals')),
 				'sum' => wc_format_decimal($additional_item_total, get_option('woocommerce_price_num_decimals')),
 				'payment_object' => get_option('robokassa_payment_paymentObject'),
 				'payment_method' => get_option('robokassa_payment_paymentMethod'),
-				'tax' => get_option('robokassa_payment_tax'),
 			);
+
+			if (($sno == 'osn') || $country == 'RU') {
+				$additional_item_data['tax'] = $default_tax;
+			} else {
+				$additional_item_data['tax'] = 'none';
+			}
 
 			$receipt_items[] = $additional_item_data;
 			$total_receipt += $additional_item_total;
 		}
 
 		if ($shipping_total > 0) {
-			$receipt_items[] = array(
+			$shipping_item = array(
 				'name' => 'Доставка',
 				'quantity' => 1,
 				'cost' => wc_format_decimal($shipping_total, get_option('woocommerce_price_num_decimals')),
 				'sum' => wc_format_decimal($shipping_total, get_option('woocommerce_price_num_decimals')),
-				'tax' => $tax,
 				'payment_method' => 'full_payment',
 				'payment_object' => get_option('robokassa_payment_paymentObject_shipping') ?: get_option('robokassa_payment_paymentObject'),
 			);
+
+			if (($sno == 'osn') || ($country != 'KZ')) {
+				$shipping_item['tax'] = $default_tax;
+			} else {
+				$shipping_item['tax'] = 'none';
+			}
+
+			$receipt_items[] = $shipping_item;
 		}
 
 		$request_data = array(
@@ -1062,16 +1303,249 @@ function robokassa_woocommerce_block_support()
 		add_action(
 			'woocommerce_blocks_payment_method_type_registration',
 			function (PaymentMethodRegistry $payment_method_registry) {
-				$container = Automattic\WooCommerce\Blocks\Package::container();
-				$container->register(
-					WC_Robokassa_Blocks::class,
-					function () {
-						return new WC_Robokassa_Blocks();
-					}
-				);
-				$payment_method_registry->register($container->get(WC_Robokassa_Blocks::class));
+				foreach (robokassa_get_block_gateway_ids() as $gateway_id) {
+					$payment_method_registry->register(new WC_Robokassa_Blocks($gateway_id));
+				}
 			},
 			5
 		);
 	}
+}
+
+/**
+ * Возвращает список доступных алиасов способов оплаты.
+ *
+ * @return array
+ */
+function robokassa_get_available_currency_aliases()
+{
+	static $aliases = null;
+
+	if (!is_array($aliases)) {
+		$data = robokassa_read_currency_data();
+		$aliases = [];
+
+		foreach ($data as $key => $details) {
+			$alias = robokassa_normalize_alias_key($key, $details);
+
+			if ($alias === '') {
+				continue;
+			}
+
+			$aliases[$alias] = robokassa_prepare_alias_details($alias, $details);
+		}
+	}
+
+	return $aliases;
+}
+
+/**
+ * Загружает данные о валютах Robokassa из файла.
+ *
+ * @return array
+ */
+function robokassa_read_currency_data()
+{
+	$path = __DIR__ . '/data/currencies.json';
+
+	if (!file_exists($path)) {
+		return [];
+	}
+
+	$contents = file_get_contents($path);
+
+	if (!is_string($contents) || $contents === '') {
+		return [];
+	}
+
+	$data = json_decode($contents, true);
+
+	return is_array($data) ? $data : [];
+}
+
+/**
+ * Определяет корректный алиас по исходным данным.
+ *
+ * @param mixed $key
+ * @param mixed $details
+ *
+ * @return string
+ */
+function robokassa_normalize_alias_key($key, $details)
+{
+	if (is_array($details) && isset($details['Alias'])) {
+		$value = $details['Alias'];
+	} else {
+		$value = $key;
+	}
+
+	return strtoupper(trim((string)$value));
+}
+
+/**
+ * Подготавливает данные по ограничениям суммы для алиаса.
+ *
+ * @param string $alias
+ * @param mixed $details
+ *
+ * @return array
+ */
+function robokassa_prepare_alias_details($alias, $details)
+{
+	$details = is_array($details) ? $details : [];
+
+	$result = [
+		'Alias' => $alias,
+	];
+
+	if (isset($details['MinValue']) && $details['MinValue'] !== '') {
+		$result['MinValue'] = (string)$details['MinValue'];
+	}
+
+	if (isset($details['MaxValue']) && $details['MaxValue'] !== '') {
+		$result['MaxValue'] = (string)$details['MaxValue'];
+	}
+
+	return $result;
+}
+
+/**
+ * Проверяет наличие алиаса в списке доступных способов оплаты.
+ *
+ * @param string $alias
+ *
+ * @return bool
+ */
+function robokassa_is_currency_alias_available($alias)
+{
+	$alias = strtoupper(trim((string)$alias));
+
+	if ($alias === '') {
+		return false;
+	}
+
+	$aliases = robokassa_get_available_currency_aliases();
+
+	return isset($aliases[$alias]);
+}
+
+/**
+ * Возвращает данные для указанного алиаса Robokassa.
+ *
+ * @param string $alias
+ *
+ * @return array
+ */
+function robokassa_get_currency_alias_details($alias)
+{
+	$alias = strtoupper(trim((string)$alias));
+
+	if ($alias === '') {
+		return [];
+	}
+
+	$aliases = robokassa_get_available_currency_aliases();
+
+	return isset($aliases[$alias]) ? $aliases[$alias] : [];
+}
+
+/**
+ * Преобразует строковое значение суммы в числовой формат.
+ *
+ * @param mixed $value
+ *
+ * @return float
+ */
+function robokassa_normalize_amount_value($value)
+{
+	if (!is_string($value) && !is_numeric($value)) {
+		return 0.0;
+	}
+
+	$normalized = preg_replace('/[^0-9.,]/', '', (string)$value);
+	$normalized = str_replace(' ', '', (string)$normalized);
+	$normalized = str_replace(',', '.', $normalized);
+
+	return (float)$normalized;
+}
+
+/**
+ * Проверяет соответствие суммы ограничениям, заданным для алиаса.
+ *
+ * @param string $alias
+ * @param float  $amount
+ *
+ * @return bool
+ */
+function robokassa_is_amount_allowed_for_alias($alias, $amount)
+{
+	$details = robokassa_get_currency_alias_details($alias);
+
+	if (!is_array($details) || empty($details)) {
+		return false;
+	}
+
+	if (!is_numeric($amount)) {
+		return false;
+	}
+
+	$amount = (float)$amount;
+
+	if ($amount <= 0) {
+		return true;
+	}
+
+	if (isset($details['MaxValue']) && $details['MaxValue'] !== '') {
+		$max_value = robokassa_normalize_amount_value($details['MaxValue']);
+
+		if ($max_value > 0 && $amount > $max_value) {
+			return false;
+		}
+	}
+
+	if (isset($details['MinValue']) && $details['MinValue'] !== '') {
+		$min_value = robokassa_normalize_amount_value($details['MinValue']);
+
+		if ($min_value > 0 && $amount < $min_value) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/**
+ * Возвращает идентификаторы методов оплаты для блоков оформления заказа.
+ *
+ * @return array
+ */
+function robokassa_get_block_gateway_ids()
+{
+	if (!function_exists('robokassa_payment_add_WC_WP_robokassa_class')) {
+		require_once __DIR__ . '/labelsClasses.php';
+	}
+
+	$gateway_ids = [];
+
+	foreach ((array)robokassa_payment_add_WC_WP_robokassa_class() as $class_name) {
+		if (!class_exists($class_name)) {
+			continue;
+		}
+
+		$method = new $class_name();
+
+		if (empty($method->id)) {
+			continue;
+		}
+
+		$config = robokassa_get_optional_method_config_by_gateway($method->id);
+
+		if (!empty($config) && !robokassa_is_optional_method_active($config)) {
+			continue;
+		}
+
+		$gateway_ids[] = $method->id;
+	}
+
+	return array_values(array_unique($gateway_ids));
 }
