@@ -2,7 +2,7 @@
 Tags: robokassa payment gateway, robokassa, robokassa woocommerce, ecommerce, payment gateway
 Requires at least: 5.7
 Tested up to: 6.9
-Stable tag: 1.8.4
+Stable tag: 1.8.7
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -115,6 +115,9 @@ License URI: https://www.gnu.org/licenses/gpl-2.0.html
 2. `/assets/images/screenshot-2.png`
 
 == Changelog ==
+= 1.8.7 =
+* Исправлено открытие iframe-оплаты и улучшен UI QR-кода СБП
+
 = 1.8.6 =
 * Добавлен график платежей Robokassa для способов оплаты частями на странице оформления заказа
 * Добавлена настройка отображения графика платежей в админ-панели
