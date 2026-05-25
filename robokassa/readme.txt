@@ -1,8 +1,8 @@
 === Robokassa payment gateway for Woocommerce ===
 Tags: robokassa payment gateway, robokassa, robokassa woocommerce, ecommerce, payment gateway
 Requires at least: 5.7
-Tested up to: 6.9
-Stable tag: 1.8.7
+Tested up to: 7.0
+Stable tag: 1.8.8
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -13,7 +13,7 @@ License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
 # Акция для новых клиентов Robokassa
 
-**Комиссия 2,7% за прием платежей картами РФ и pay-методами с бесплатными чеками по 54-ФЗ.**
+**Комиссия 3,1% за прием платежей картами РФ и pay-методами с бесплатными чеками по 54-ФЗ.**
 [Подключить Robokassa](https://partner.robokassa.ru/Reg/Register?PromoCode=Wordpress27&culture=ru)
 
 ---
@@ -115,6 +115,10 @@ License URI: https://www.gnu.org/licenses/gpl-2.0.html
 2. `/assets/images/screenshot-2.png`
 
 == Changelog ==
+= 1.8.8 =
+* Исправлен редирект на success page
+* Корректировка оплаты подписок и логики статусов заказ
+
 = 1.8.7 =
 * Исправлено открытие iframe-оплаты и улучшен UI QR-кода СБП
 
