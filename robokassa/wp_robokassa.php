@@ -5,7 +5,7 @@
  * Plugin URI: /wp-admin/admin.php?page=main_settings_rb.php
  * Author: Robokassa
  * Author URI: https://robokassa.com
- * Version: 1.8.8
+ * Version: 1.8.9
  */
 
 require_once('payment-widget.php');
@@ -16,6 +16,7 @@ use Robokassa\Payment\RobokassaPayAPI;
 use Robokassa\Payment\RobokassaSms;
 use Robokassa\Payment\Util;
 use Robokassa\Payment\AgentManager;
+use Robokassa\Payment\MarkingManager;
 use Robokassa\Payment\PaymentObjectManager;
 use Robokassa\Payment\TaxManager;
 use Automattic\WooCommerce\Blocks\Payments\PaymentMethodRegistry;
@@ -65,9 +66,18 @@ add_action('woocommerce_review_order_before_payment', 'refresh_payment_methods')
 add_action('woocommerce_product_options_general_product_data', 'robokassa_payment_render_product_tax_field');
 add_action('woocommerce_product_options_general_product_data', 'robokassa_payment_render_product_payment_object_field');
 add_action('woocommerce_product_options_general_product_data', 'robokassa_payment_render_product_agent_fields');
+add_action('woocommerce_product_options_general_product_data', 'robokassa_payment_render_product_marking_field');
 add_action('woocommerce_admin_process_product_object', 'robokassa_payment_save_product_tax_field');
 add_action('woocommerce_admin_process_product_object', 'robokassa_payment_save_product_payment_object_field');
 add_action('woocommerce_admin_process_product_object', 'robokassa_payment_save_product_agent_fields');
+add_action('woocommerce_admin_process_product_object', 'robokassa_payment_save_product_marking_field');
+add_action('woocommerce_checkout_create_order_line_item', 'robokassa_payment_snapshot_order_item_marking', 10, 4);
+add_action('woocommerce_admin_order_item_headers', 'robokassa_payment_render_order_marking_header');
+add_action('woocommerce_admin_order_item_values', 'robokassa_payment_render_order_marking_value', 10, 3);
+add_action('admin_enqueue_scripts', 'robokassa_payment_enqueue_marking_assets');
+add_action('admin_footer', 'robokassa_payment_render_marking_modal');
+add_action('wp_ajax_robokassa_get_marking_codes', 'robokassa_payment_ajax_get_marking_codes');
+add_action('wp_ajax_robokassa_save_marking_codes', 'robokassa_payment_ajax_save_marking_codes');
 function refresh_payment_methods()
 {
 	// jQuery code
@@ -409,9 +419,11 @@ add_action('woocommerce_order_status_changed', 'robokassa_2check_send', 10, 3);
 add_action('woocommerce_order_status_changed', 'robokassa_hold_confirm', 10, 4);
 add_action('woocommerce_order_status_changed', 'robokassa_hold_cancel', 10, 4);
 add_action('robokassa_cancel_payment_event', 'robokassa_hold_cancel_after5', 10, 1);
+add_action('robokassa_refund_check_event', 'robokassa_payment_check_refund_status', 10, 2);
 add_action(ROBOKASSA_PAYMENT_CURRENCY_LABELS_CRON_HOOK, 'robokassa_payment_refresh_currency_labels_cron');
 add_action('wp_ajax_robokassa_check_order_status', 'robokassa_check_order_status');
 add_action('wp_ajax_nopriv_robokassa_check_order_status', 'robokassa_check_order_status');
+add_filter('woocommerce_order_fully_refunded_status', 'robokassa_payment_defer_fully_refunded_status', 10, 3);
 
 register_activation_hook(__FILE__, 'robokassa_payment_wp_robokassa_activate'); //Хук при активации плагина. Дефолтовые настройки и таблица в БД для СМС.
 register_deactivation_hook(__FILE__, 'robokassa_payment_wp_robokassa_deactivate');
@@ -494,6 +506,20 @@ function robokassa_payment_get_agent_manager()
 	}
 
 	return $robokassa_payment_agent_manager;
+}
+
+/**
+ * @return MarkingManager
+ */
+function robokassa_payment_get_marking_manager()
+{
+	global $robokassa_payment_marking_manager;
+
+	if (!$robokassa_payment_marking_manager instanceof MarkingManager) {
+		$robokassa_payment_marking_manager = new MarkingManager();
+	}
+
+	return $robokassa_payment_marking_manager;
 }
 
 /**
@@ -599,6 +625,11 @@ function robokassa_payment_render_product_agent_fields()
 	robokassa_payment_get_agent_manager()->renderProductAgentFields();
 }
 
+function robokassa_payment_render_product_marking_field()
+{
+	robokassa_payment_get_marking_manager()->renderProductField();
+}
+
 /**
  * Сохраняет выбранную налоговую ставку товара.
  *
@@ -633,6 +664,46 @@ function robokassa_payment_save_product_payment_object_field($product)
 function robokassa_payment_save_product_agent_fields($product)
 {
 	robokassa_payment_get_agent_manager()->saveProductAgentFields($product);
+}
+
+function robokassa_payment_save_product_marking_field($product)
+{
+	robokassa_payment_get_marking_manager()->saveProductField($product);
+}
+
+function robokassa_payment_snapshot_order_item_marking($item, $cart_item_key, $values, $order)
+{
+	robokassa_payment_get_marking_manager()->snapshotOrderItem($item, $cart_item_key, $values);
+}
+
+function robokassa_payment_render_order_marking_header()
+{
+	robokassa_payment_get_marking_manager()->renderOrderItemHeader();
+}
+
+function robokassa_payment_render_order_marking_value($product, $item, $item_id)
+{
+	robokassa_payment_get_marking_manager()->renderOrderItemValue($product, $item, $item_id);
+}
+
+function robokassa_payment_enqueue_marking_assets()
+{
+	robokassa_payment_get_marking_manager()->enqueueOrderAssets();
+}
+
+function robokassa_payment_render_marking_modal()
+{
+	robokassa_payment_get_marking_manager()->renderOrderModal();
+}
+
+function robokassa_payment_ajax_get_marking_codes()
+{
+	robokassa_payment_get_marking_manager()->ajaxGetCodes();
+}
+
+function robokassa_payment_ajax_save_marking_codes()
+{
+	robokassa_payment_get_marking_manager()->ajaxSaveCodes();
 }
 
 /**
@@ -694,12 +765,179 @@ function robokassa_payment_wp_robokassa_activate($debug)
 	add_option('robokassa_payment_tax', 'none');
 	add_option('robokassa_payment_tax_source', 'global');
 	add_option('robokassa_payment_payment_object_source', 'global');
+	add_option(MarkingManager::OPTION_ENABLED, 'no');
 	add_option('robokassa_payment_sno', 'fckoff');
 	add_option('robokassa_payment_who_commission', 'shop');
 	add_option('robokassa_payment_paytype', 'false');
 	add_option('robokassa_payment_SuccessURL', 'wc_success');
 	add_option('robokassa_payment_FailURL', 'wc_checkout');
+	add_option('robokassa_payment_shoppass3', '');
 	robokassa_payment_schedule_currency_labels_refresh();
+}
+
+/**
+ * Проверяет асинхронный статус заявки на возврат Robokassa.
+ *
+ * @param int    $order_id
+ * @param string $request_id
+ * @return void
+ */
+function robokassa_payment_check_refund_status($order_id, $request_id)
+{
+	$order = wc_get_order($order_id);
+	if (!$order instanceof \WC_Order) {
+		return;
+	}
+
+	$requests = $order->get_meta('_robokassa_refund_requests', true);
+	$requests = is_array($requests) ? $requests : array();
+
+	if (!isset($requests[$request_id])) {
+		return;
+	}
+	$current_status = isset($requests[$request_id]['status']) ? $requests[$request_id]['status'] : '';
+	if (in_array($current_status, array('finished', 'canceled'), true)) {
+		return;
+	}
+
+	$api = new \Robokassa\Payment\RefundApi(
+		get_option('robokassa_payment_MerchantLogin'),
+		get_option('robokassa_payment_shoppass2'),
+		get_option('robokassa_payment_shoppass3')
+	);
+	$result = $api->getState($request_id);
+
+	$requests[$request_id]['attempts'] = isset($requests[$request_id]['attempts'])
+		? (int)$requests[$request_id]['attempts'] + 1
+		: 1;
+	$max_attempts = (int)apply_filters('robokassa_refund_status_max_attempts', 24);
+	$next_delay = robokassa_refund_status_check_delay($requests[$request_id]['attempts']);
+
+	if (is_wp_error($result)) {
+		$requests[$request_id]['last_error'] = $result->get_error_message();
+		$order->update_meta_data('_robokassa_refund_requests', $requests);
+		$order->save();
+		if ($requests[$request_id]['attempts'] < $max_attempts) {
+			robokassa_schedule_refund_status_check($order_id, $request_id, $next_delay);
+		} else {
+			$order->add_order_note('Robokassa: не удалось автоматически получить итоговый статус возврата. ID заявки: ' . $request_id);
+			$order->save();
+		}
+		return;
+	}
+
+	$status = isset($result['label']) ? sanitize_text_field($result['label']) : '';
+	$requests[$request_id]['status'] = $status;
+	$requests[$request_id]['checked_at'] = current_time('mysql');
+	$order->update_meta_data('_robokassa_refund_requests', $requests);
+	$refund_id = isset($requests[$request_id]['refund_id']) ? absint($requests[$request_id]['refund_id']) : 0;
+	$refund = $refund_id > 0 ? wc_get_order($refund_id) : false;
+	if ($refund instanceof \WC_Order_Refund) {
+		$refund->update_meta_data('_robokassa_refund_status', $status);
+		$refund->save();
+	}
+
+	if ($status === 'finished') {
+		if (!empty($requests[$request_id]['is_full'])
+			&& robokassa_payment_is_gateway_order($order)
+			&& $order->get_status() !== 'refunded'
+		) {
+			$order->update_status('refunded');
+		}
+		$order->add_order_note('Robokassa: возврат успешно завершён. ID заявки: ' . $request_id);
+	} elseif ($status === 'canceled') {
+		$order->add_order_note('Robokassa: возврат отменён. Проверьте заказ и верните локальный возврат WooCommerce вручную. ID заявки: ' . $request_id);
+	} elseif ($requests[$request_id]['attempts'] < $max_attempts) {
+		robokassa_schedule_refund_status_check($order_id, $request_id, $next_delay);
+	} else {
+		$order->add_order_note('Robokassa: автоматическая проверка возврата остановлена. Проверьте статус вручную. ID заявки: ' . $request_id);
+	}
+
+	$order->save();
+}
+
+/**
+ * Не переводит заказ в «Возвращён», пока Robokassa обрабатывает полный возврат.
+ * Остальные платёжные шлюзы и частичные возвраты не затрагиваются.
+ *
+ * @param string|false $status
+ * @param int          $order_id
+ * @param int          $refund_id
+ * @return string|false
+ */
+function robokassa_payment_defer_fully_refunded_status($status, $order_id, $refund_id)
+{
+	$order = wc_get_order($order_id);
+	if (!$order instanceof \WC_Order || !robokassa_payment_is_gateway_order($order)) {
+		return $status;
+	}
+
+	$requests = $order->get_meta('_robokassa_refund_requests', true);
+	if (!is_array($requests)) {
+		return $status;
+	}
+
+	foreach ($requests as $request) {
+		if (is_array($request)
+			&& !empty($request['is_full'])
+			&& isset($request['status'])
+			&& $request['status'] === 'processing'
+		) {
+			return false;
+		}
+	}
+
+	return $status;
+}
+
+/** @param \WC_Order $order */
+function robokassa_payment_is_gateway_order($order)
+{
+	return strpos((string)$order->get_payment_method(), 'robokassa') === 0;
+}
+
+/** @return int Задержка до следующей проверки в секундах. */
+function robokassa_refund_status_check_delay($attempts)
+{
+	$attempts = (int)$attempts;
+	if ($attempts < 6) {
+		return 5 * MINUTE_IN_SECONDS;
+	}
+	if ($attempts < 12) {
+		return 15 * MINUTE_IN_SECONDS;
+	}
+
+	return HOUR_IN_SECONDS;
+}
+
+/**
+ * Планирует проверку через Action Scheduler WooCommerce.
+ * На старых установках используется WP-Cron.
+ *
+ * @param int    $order_id
+ * @param string $request_id
+ * @param int    $delay
+ * @return int|bool
+ */
+function robokassa_schedule_refund_status_check($order_id, $request_id, $delay)
+{
+	$args = array((int)$order_id, (string)$request_id);
+	$timestamp = time() + max(1, (int)$delay);
+
+	if (function_exists('as_schedule_single_action')) {
+		return as_schedule_single_action(
+			$timestamp,
+			'robokassa_refund_check_event',
+			$args,
+			'robokassa',
+			// Повторная проверка ставится из выполняющейся задачи с теми же аргументами.
+			// При unique=true Action Scheduler считает текущую задачу дубликатом
+			// и не создаёт следующую.
+			false
+		);
+	}
+
+	return wp_schedule_single_event($timestamp, 'robokassa_refund_check_event', $args);
 }
 
 /**
@@ -729,6 +967,7 @@ function robokassa_payment_schedule_currency_labels_refresh()
  */
 function robokassa_payment_refresh_currency_labels_cron()
 {
+	robokassa_payment_refresh_result_url2_certificate();
 	include_once __DIR__ . '/labelsGenerator.php';
 
 	if (!function_exists('robokassa_update_currency_labels')) {
@@ -736,6 +975,36 @@ function robokassa_payment_refresh_currency_labels_cron()
 	}
 
 	return robokassa_update_currency_labels(false);
+}
+
+/**
+ * Обновляет публичный сертификат ResultUrl2 с официального адреса.
+ * В комплекте остаётся локальная копия на случай сетевой ошибки.
+ *
+ * @return bool
+ */
+function robokassa_payment_refresh_result_url2_certificate()
+{
+	$response = wp_remote_get(
+		'https://docs.robokassa.ru/media/files/jwtsign.cer',
+		array('timeout' => 15)
+	);
+	if (is_wp_error($response) || (int)wp_remote_retrieve_response_code($response) !== 200) {
+		return false;
+	}
+
+	$certificate = \Robokassa\Payment\ResultUrl2Notification::normalizeCertificate(
+		wp_remote_retrieve_body($response)
+	);
+	$x509 = function_exists('openssl_x509_read') ? openssl_x509_read($certificate) : false;
+	$details = $x509 !== false ? openssl_x509_parse($x509) : false;
+	if (!is_array($details) || empty($details['validTo_time_t']) || (int)$details['validTo_time_t'] <= time()) {
+		return false;
+	}
+
+	update_option('robokassa_result_url2_certificate', $certificate, false);
+
+	return true;
 }
 
 /**
@@ -792,6 +1061,10 @@ function robokassa_payment_wp_robokassa_checkPayment()
 		}
 
 		if ($_REQUEST['robokassa'] === 'result') {
+			if (robokassa_payment_is_result_url2_request()) {
+				robokassa_payment_handle_result_url2();
+				return;
+			}
 
 			/** @var string $crc_confirm */
 			$crc_confirm = strtoupper(
@@ -858,41 +1131,6 @@ function robokassa_payment_wp_robokassa_checkPayment()
 					} catch (Exception $e) {
 					}
 				}
-			} elseif ((int)get_option('robokassa_payment_hold_onoff') === 1 &&
-				strpos($_SERVER['CONTENT_TYPE'], 'application/json') !== false) {
-
-				$input_data = file_get_contents('php://input');
-
-
-				$token_parts = explode('.', $input_data);
-
-
-				if (count($token_parts) === 3) {
-
-					$json_data = json_decode(base64_decode($token_parts[1]), true);
-
-					// Проверяем наличие ключевого поля "state" со значением "HOLD"
-					if (isset($json_data['data']['state']) && $json_data['data']['state'] === 'HOLD') {
-
-						$order = new WC_Order($json_data['data']['invId']);
-						$date_in_five_days = date('Y-m-d H:i:s', strtotime('+5 days'));
-						$order->add_order_note("Robokassa: Платеж успешно подтвержден. Он ожидает подтверждения до {$date_in_five_days}, после чего автоматически отменится");
-						$order->update_status('on-hold');
-
-
-						wp_schedule_single_event(strtotime('+5 days'), 'robokassa_cancel_payment_event', array($order->get_id()));
-					}
-					if (isset($json_data['data']['state']) && $json_data['data']['state'] === 'OK') {
-
-						$order = new WC_Order($json_data['data']['invId']);
-						$order->add_order_note("Robokassa: Платеж успешно подтвержден");
-						$order->update_status('processing');
-
-					}
-					http_response_code(200);
-				} else {
-					http_response_code(400);
-				}
 			} else {
 				$returner = 'BAD SIGN';
 
@@ -917,6 +1155,81 @@ function robokassa_payment_wp_robokassa_checkPayment()
 		echo $returner;
 		die;
 	}
+}
+
+/** @return bool */
+function robokassa_payment_is_result_url2_request()
+{
+	$content_type = isset($_SERVER['CONTENT_TYPE']) ? (string)$_SERVER['CONTENT_TYPE'] : '';
+
+	return stripos($content_type, 'application/json') !== false
+		|| stripos($content_type, 'application/jose') !== false;
+}
+
+/**
+ * Проверяет ResultUrl2, сохраняет OpKey и обрабатывает состояние холда.
+ *
+ * @return void
+ */
+function robokassa_payment_handle_result_url2()
+{
+	$input = file_get_contents('php://input');
+	$verifier = new \Robokassa\Payment\ResultUrl2Notification(
+		get_option('robokassa_payment_MerchantLogin')
+	);
+	$data = $verifier->verify($input);
+
+	if (is_wp_error($data)) {
+		robokassa_payment_DEBUG('Robokassa ResultUrl2: ' . $data->get_error_message());
+		status_header(400);
+		echo 'BAD SIGN';
+		die;
+	}
+
+	$order = wc_get_order(absint($data['invId']));
+	if (!$order instanceof \WC_Order) {
+		status_header(404);
+		echo 'ORDER NOT FOUND';
+		die;
+	}
+	$payment_method = (string)$order->get_payment_method();
+	if (function_exists('robokassa_get_gateway_ids')
+		&& !in_array($payment_method, robokassa_get_gateway_ids(), true)
+	) {
+		status_header(409);
+		echo 'WRONG PAYMENT METHOD';
+		die;
+	}
+
+	$previous_state = (string)$order->get_meta('_robokassa_result2_state', true);
+	$previous_operation_key = (string)$order->get_meta('_robokassa_operation_key', true);
+	$previous_timestamp = (int)$order->get_meta('_robokassa_result2_timestamp', true);
+	$notification_timestamp = (int)$data['_notificationTimestamp'];
+	if ($previous_timestamp > $notification_timestamp) {
+		status_header(200);
+		echo 'OK' . absint($data['invId']);
+		die;
+	}
+	$order->update_meta_data('_robokassa_operation_key', sanitize_text_field($data['opKey']));
+	$order->update_meta_data('_robokassa_payment_method', sanitize_text_field($data['paymentMethod'] ?? ''));
+	$order->update_meta_data('_robokassa_result2_state', sanitize_text_field($data['state']));
+	$order->update_meta_data('_robokassa_result2_timestamp', $notification_timestamp);
+	if (method_exists($order, 'set_transaction_id') && $order->get_transaction_id() === '') {
+		$order->set_transaction_id(sanitize_text_field($data['opKey']));
+	}
+
+	$is_duplicate = $previous_state === $data['state'] && $previous_operation_key === $data['opKey'];
+	if ($data['state'] === 'HOLD' && !$is_duplicate) {
+		$date_in_five_days = date('Y-m-d H:i:s', strtotime('+5 days'));
+		$order->add_order_note("Robokassa: платеж подтверждён и ожидает списания до {$date_in_five_days}");
+		$order->update_status('on-hold');
+		wp_schedule_single_event(strtotime('+5 days'), 'robokassa_cancel_payment_event', array($order->get_id()));
+	}
+	$order->save();
+
+	status_header(200);
+	echo 'OK' . absint($data['invId']);
+	die;
 }
 
 // Подготовка строки перед кодированием в base64
@@ -1295,10 +1608,37 @@ function robokassa_2check_send($order_id, $old_status, $new_status)
 			return;
 		}
 
+		if ($order->get_meta('_robokassa_second_receipt_sent', true) === 'yes') {
+			robokassa_payment_DEBUG("Robokassa: Second receipt for order_id: $order_id was already sent");
+			return;
+		}
+
+		$receipt_operation_id = (int)$order->get_meta('_robokassa_second_receipt_operation_id', true);
+
+		if ($receipt_operation_id <= 0) {
+			$receipt_operation_id = (int)(time() * 1000000 + ($order->get_id() % 1000000));
+			$order->update_meta_data('_robokassa_second_receipt_operation_id', $receipt_operation_id);
+			$order->save();
+		}
+
+		$marking_manager = robokassa_payment_get_marking_manager();
+		$marking_errors = $marking_manager->validateOrder($order);
+
+		if (!empty($marking_errors)) {
+			$message = 'Robokassa: второй чек не отправлен. Заполните маркировку: ' . implode('; ', $marking_errors);
+			robokassa_payment_DEBUG($message);
+
+			if (method_exists($order, 'add_order_note')) {
+				$order->add_order_note($message);
+			}
+
+			return;
+		}
+
 		/** @var array $fields */
 		$fields = [
 			'merchantId' => get_option('robokassa_payment_MerchantLogin'),
-			'id' => $order->get_id() + 1,
+			'id' => $receipt_operation_id,
 			'originId' => $order->get_id(),
 			'operation' => 'sell',
 			'url' => urlencode('http://' . $_SERVER['HTTP_HOST']),
@@ -1375,17 +1715,9 @@ function robokassa_2check_send($order_id, $old_status, $new_status)
 				'payment_object' => $second_check_payment_object,
 			];
 
-			$product = $item->get_product();
-
-			if ($product instanceof WC_Product) {
-				$sku = $product->get_sku();
-
-				if (!empty($sku)) {
-					$products_items['nomenclature_code'] = mb_convert_encoding($sku, 'UTF-8');
-				}
+			foreach ($marking_manager->buildSecondReceiptItems($item, $products_items) as $receipt_item) {
+				$fields['items'][] = $receipt_item;
 			}
-
-			$fields['items'][] = $products_items;
 		}
 
 		foreach ($order->get_items('fee') as $fee_item) {
@@ -1449,6 +1781,14 @@ function robokassa_2check_send($order_id, $old_status, $new_status)
 			robokassa_payment_DEBUG("Robokassa: cURL error: " . curl_error($curl));
 		} else {
 			robokassa_payment_DEBUG("Robokassa: cURL result: " . $result);
+			$response_data = json_decode($result, true);
+
+			if (is_array($response_data) && isset($response_data['ResultCode']) && (string)$response_data['ResultCode'] === '0') {
+				$order->update_meta_data('_robokassa_second_receipt_sent', 'yes');
+				$order->update_meta_data('_robokassa_second_receipt_response', $response_data);
+				$order->save();
+				$order->add_order_note('Robokassa: второй чек принят в обработку. ID операции: ' . $receipt_operation_id);
+			}
 		}
 
 		curl_close($curl);

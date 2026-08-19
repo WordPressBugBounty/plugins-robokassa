@@ -61,6 +61,7 @@ if (function_exists('wc_prices_include_tax')) {
 				'robokassa_payment_MerchantLogin',
 				'robokassa_payment_shoppass1',
 				'robokassa_payment_shoppass2',
+				'robokassa_payment_shoppass3',
 				'robokassa_payment_test_onoff',
 				'robokassa_payment_testshoppass1',
 				'robokassa_payment_testshoppass2',
@@ -68,6 +69,7 @@ if (function_exists('wc_prices_include_tax')) {
 				'robokassa_payment_tax',
 				'robokassa_payment_tax_source',
 				'robokassa_payment_agent_fields_enabled',
+				'robokassa_payment_marking_enabled',
 				'robokassa_payment_who_commission',
 				'robokassa_payment_size_commission',
 				'robokassa_payment_paytype',
@@ -257,11 +259,20 @@ if (function_exists('wc_prices_include_tax')) {
 									echo get_option('robokassa_payment_shoppass1'); ?>"/></td>
 							</tr>
 
-							<tr valign="top">
+			<tr valign="top">
 								<th scope="row">Пароль магазина #2</th>
 								<td><input type="password" name="robokassa_payment_shoppass2" value="<?php
 									echo get_option('robokassa_payment_shoppass2'); ?>"/></td>
-							</tr>
+			</tr>
+
+			<tr valign="top">
+				<th scope="row">Пароль магазина #3</th>
+				<td>
+					<input type="password" name="robokassa_payment_shoppass3" value="<?php
+						echo esc_attr(get_option('robokassa_payment_shoppass3')); ?>"/>
+					<br/><span class="text-description">Используется только для возвратов. Сгенерируйте Password3 в личном кабинете Robokassa.</span>
+				</td>
+			</tr>
 
 							<tr valign="top">
 								<th scope="row">Язык интерфейса робокассы</th>
@@ -500,6 +511,19 @@ if (function_exists('wc_prices_include_tax')) {
 										</select>
 										<br/>
 										<span class="text-description">Если параметр не выбран, используется значение из поля «Признак предмета расчёта для товаров/услуг».</span>
+									</td>
+								</tr>
+								<tr valign="top" id="robokassa_marking_settings">
+									<th scope="row">Маркировка товаров во втором чеке</th>
+									<td>
+										<input type="hidden" name="robokassa_payment_marking_enabled" value="no"/>
+										<label for="robokassa_payment_marking_enabled">
+											<input type="checkbox" id="robokassa_payment_marking_enabled"
+												   name="robokassa_payment_marking_enabled" value="yes"
+												<?php checked(get_option('robokassa_payment_marking_enabled', 'no'), 'yes'); ?>/>
+											Передавать коды маркировки при формировании второго чека
+										</label>
+										<p class="description">После включения отметьте маркируемые товары в их карточках и отсканируйте коды в заказе до перевода в статус второго чека.</p>
 									</td>
 								</tr>
 
