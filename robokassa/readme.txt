@@ -2,7 +2,7 @@
 Tags: robokassa payment gateway, robokassa, robokassa woocommerce, ecommerce, payment gateway
 Requires at least: 5.7
 Tested up to: 7.0
-Stable tag: 1.8.9
+Stable tag: 1.9.0
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -123,6 +123,10 @@ License URI: https://www.gnu.org/licenses/gpl-2.0.html
 2. `/assets/images/screenshot-2.png`
 
 == Changelog ==
+= 1.9.0 =
+* Улучшена обработка платёжных уведомлений и переходов после оплаты
+* Повышена надёжность проверки входящих данных
+
 = 1.8.9 =
 * Добавлены полные и частичные возвраты через Refund API Robokassa
 * Добавлена фоновая проверка статуса заявок через Action Scheduler
