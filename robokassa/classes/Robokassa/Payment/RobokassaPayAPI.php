@@ -75,7 +75,7 @@ class RobokassaPayAPI {
 		$this->mrh_pass2 = $pass2;
 		$this->method = $method;
 
-		$this->apiUrl = substr($_SERVER['SERVER_PROTOCOL'], 0, -4) . '://auth.robokassa.ru/Merchant/WebService/Service.asmx/';
+		$this->apiUrl = 'https://auth.robokassa.ru/Merchant/WebService/Service.asmx/';
 	}
 
 	/**
@@ -700,15 +700,26 @@ class RobokassaPayAPI {
 			'signature' => $this->getSignature("$this->mrh_login:$phone:$message:$this->mrh_pass1"),
 		);
 
-		$url = substr($_SERVER['SERVER_PROTOCOL'], 0, -4) . '://services.robokassa.ru/SMS/?' . http_build_query($data);
+		$url = 'https://services.robokassa.ru/SMS/?' . http_build_query($data);
 
-		$response = file_get_contents($url);
-		$parsed = json_decode($response, true);
-
+		$response = wp_remote_get($url, array('timeout' => 20, 'redirection' => 0));
+		if (is_wp_error($response) || (int)wp_remote_retrieve_response_code($response) !== 200) {
+			throw new \RuntimeException('SMS response is unconfirmed');
+		}
+		$body = wp_remote_retrieve_body($response);
+		$parsed = json_decode($body, true);
 		$this->request = $url;
-		$this->reply = $response;
-
-		return ($parsed['result'] == 1);
+		$this->reply = $body;
+		if (!is_array($parsed) || !array_key_exists('result', $parsed)) {
+			throw new \RuntimeException('SMS response is unconfirmed');
+		}
+		if (in_array($parsed['result'], array(true, 1, '1'), true)) {
+			return true;
+		}
+		if (in_array($parsed['result'], array(false, 0, '0'), true)) {
+			return false;
+		}
+		throw new \RuntimeException('SMS response is unconfirmed');
 	}
 
 	/**
